@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Oscilador masa-resorte</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    max-width: 900px;
+    margin: 35px auto;
+    padding: 0 18px;
+    background: white;
+    color: #222;
+  }
+  canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+    touch-action: none;
+  }
+  .buttons { text-align: center; margin: 12px; }
+  button {
+    padding: 9px 18px;
+    margin: 4px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  label {
+    display: grid;
+    grid-template-columns: 180px 1fr 70px;
+    gap: 12px;
+    align-items: center;
+    margin: 16px 0;
+  }
+  input { width: 100%; }
+  #message { text-align: center; }
+</style>
+</head>
+<body>
+
+<canvas id="scene" width="900" height="340"></canvas>
+
+<div class="buttons">
+  <button id="release">Soltar</button>
+  <button id="grab">Agarrar de nuevo</button>
+  <button id="center">Centrar</button>
+</div>
+
+<label>Masa m (kg)
+  <input id="m" type="range" min="0.2" max="4" step="0.01" value="1">
+  <output id="mValue"></output>
+</label>
+<label>Rigidez k (N/m)
+  <input id="k" type="range" min="0.5" max="10" step="0.01" value="4">
+  <output id="kValue"></output>
+</label>
+<label>Fricción b (N·s/m)
+  <input id="b" type="range" min="0" max="3" step="0.01" value="0">
+  <output id="bValue"></output>
+</label>
+
+<p id="message">Arrastra la masa y suelta el puntero para iniciar.</p>
+
+<script>
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d");
+const message = document.getElementById("message");
+
+const inputs = {};
+const parameters = {m: 1, k: 4, b: 0};
+
+let x = 0.8;
+let v = 0;
+let running = false;
+let dragging = false;
+let offset = 0;
+let previousTime;
+
+const wall = -1.45;
+const radius = 0.14;
+const scale = 270;
+const origin = 470;
+const baseline = 175;
+
+const px = value => origin + scale * value;
+const clamp = value => Math.max(-1.1, Math.min(1.1, value));
+
+for (const name of ["m", "k", "b"]) {
+  inputs[name] = document.getElementById(name);
+  const output = document.getElementById(name + "Value");
+  output.textContent = parameters[name].toFixed(2);
+
+  inputs[name].addEventListener("input", () => {
+    parameters[name] = Number(inputs[name].value);
+    output.textContent = parameters[name].toFixed(2);
+  });
+}
+
+function status() {
+  message.textContent = running
+    ? "La masa oscila. Puedes agarrarla o cambiar los parámetros."
+    : "Arrastra la masa y suelta el puntero, o presiona Soltar.";
+}
+
+document.getElementById("release").onclick = () => {
+  if (!dragging && !running) {
+    v = 0;
+    running = true;
+    status();
+  }
+};
+
+document.getElementById("grab").onclick = () => {
+  running = false;
+  v = 0;
+  status();
+};
+
+document.getElementById("center").onclick = () => {
+  running = false;
+  x = 0;
+  v = 0;
+  status();
+};
+
+function pointerPosition(event) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * canvas.width / rect.width,
+    y: (event.clientY - rect.top) * canvas.height / rect.height
+  };
+}
+
+canvas.addEventListener("pointerdown", event => {
+  const point = pointerPosition(event);
+  const half = radius * scale;
+
+  if (Math.abs(point.x - px(x)) <= half &&
+      Math.abs(point.y - baseline) <= half) {
+    offset = (point.x - origin) / scale - x;
+    dragging = true;
+    running = false;
+    v = 0;
+    canvas.setPointerCapture(event.pointerId);
+    canvas.style.cursor = "grabbing";
+    message.textContent = "Sosteniendo la masa…";
+  }
+});
+
+canvas.addEventListener("pointermove", event => {
+  const point = pointerPosition(event);
+
+  if (dragging) {
+    x = clamp((point.x - origin) / scale - offset);
+  } else {
+    const half = radius * scale;
+    canvas.style.cursor =
+      Math.abs(point.x - px(x)) <= half &&
+      Math.abs(point.y - baseline) <= half ? "grab" : "default";
+  }
+});
+
+function finishDrag(event, release) {
+  if (!dragging) return;
+  dragging = false;
+  v = 0;
+  running = release;
+  if (canvas.hasPointerCapture(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+  canvas.style.cursor = "grab";
+  status();
+}
+
+canvas.addEventListener("pointerup", event => finishDrag(event, true));
+canvas.addEventListener("pointercancel", event => finishDrag(event, false));
+
+// m*x'' + b*x' + k*x = 0
+// Integración Runge-Kutta de cuarto orden.
+function acceleration(position, velocity) {
+  return (-parameters.k * position - parameters.b * velocity) /
+         parameters.m;
+}
+
+function integrate(h) {
+  const a1 = v;
+  const b1 = acceleration(x, v);
+
+  const a2 = v + h * b1 / 2;
+  const b2 = acceleration(x + h * a1 / 2, v + h * b1 / 2);
+
+  const a3 = v + h * b2 / 2;
+  const b3 = acceleration(x + h * a2 / 2, v + h * b2 / 2);
+
+  const a4 = v + h * b3;
+  const b4 = acceleration(x + h * a3, v + h * b3);
+
+  x += h * (a1 + 2*a2 + 2*a3 + a4) / 6;
+  v += h * (b1 + 2*b2 + 2*b3 + b4) / 6;
+}
+
+function line(x1, y1, x2, y2, color, width = 2) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const half = radius * scale;
+  const massX = px(x);
+  const wallX = px(wall);
+
+  // Piso y pared.
+  line(35, baseline + half, 865, baseline + half, "#bbb", 3);
+  line(wallX, baseline - 90, wallX, baseline + 90, "#222", 4);
+  for (let y = baseline - 80; y < baseline + 90; y += 20) {
+    line(wallX - 20, y + 15, wallX, y, "#222");
+  }
+
+  // Posición de equilibrio.
+  ctx.setLineDash([6, 6]);
+  line(px(0), baseline - 85, px(0), baseline + 85, "#999");
+  ctx.setLineDash([]);
+
+  // Resorte.
+  const end = massX - half;
+  ctx.strokeStyle = "#222";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(wallX, baseline);
+  for (let i = 1; i <= 20; i++) {
+    const springX = wallX + (end - wallX) * i / 20;
+    const springY = baseline + (i === 20 ? 0 : 20 * (-1)**i);
+    ctx.lineTo(springX, springY);
+  }
+  ctx.stroke();
+
+  // Masa cuadrada.
+  ctx.fillStyle = "#3399ff";
+  ctx.fillRect(massX - half, baseline - half, 2*half, 2*half);
+  ctx.strokeStyle = "#185184";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(massX - half, baseline - half, 2*half, 2*half);
+  ctx.fillStyle = "white";
+  ctx.font = "24px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("m", massX, baseline + 8);
+
+  // Flecha de fuerza restauradora, de longitud ilustrativa.
+  const arrowY = baseline - 85;
+  const arrowEnd = massX - 0.45 * x * scale;
+  if (Math.abs(x) > 0.002) {
+    line(massX, arrowY, arrowEnd, arrowY, "#dc2525", 3);
+    const direction = Math.sign(arrowEnd - massX);
+    line(arrowEnd, arrowY,
+         arrowEnd - direction*12, arrowY - 7, "#dc2525", 3);
+    line(arrowEnd, arrowY,
+         arrowEnd - direction*12, arrowY + 7, "#dc2525", 3);
+  }
+
+  ctx.fillStyle = "#dc2525";
+  ctx.font = "22px Arial";
+  ctx.fillText("F = −kx", massX, arrowY - 18);
+
+  ctx.fillStyle = "#555";
+  ctx.font = "16px Arial";
+  ctx.fillText("Equilibrio", px(0), baseline + 115);
+}
+
+function animate(time) {
+  if (previousTime === undefined) previousTime = time;
+  const dt = Math.min((time - previousTime) / 1000, 0.05);
+  previousTime = time;
+
+  if (running && !dragging && dt > 0) {
+    const steps = Math.ceil(dt / 0.005);
+    for (let i = 0; i < steps; i++) integrate(dt / steps);
+  }
+
+  draw();
+  requestAnimationFrame(animate);
+}
+
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
